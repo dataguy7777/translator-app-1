@@ -10,6 +10,11 @@ import nltk
 import re
 from collections import Counter
 import time  # Required for retry mechanism
+import logging
+
+# Configure logging to capture translation errors
+logging.basicConfig(filename='app.log', level=logging.ERROR,
+                    format='%(asctime)s:%(levelname)s:%(message)s')
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -26,7 +31,8 @@ def remove_illegal_characters(text):
     Removes illegal characters from a string that are not allowed in Excel cells.
     """
     # Remove characters with code points < 32 except for tab (\t), newline (\n), carriage return (\r)
-    return re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]', '', text)
+    cleaned_text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]', '', text)
+    return cleaned_text
 
 # Function to clean DataFrame
 def clean_dataframe(df):
@@ -35,6 +41,7 @@ def clean_dataframe(df):
     """
     string_cols = df.select_dtypes(include=['object']).columns
     for col in string_cols:
+        # Use .loc to avoid SettingWithCopyWarning
         df.loc[:, col] = df[col].apply(lambda x: remove_illegal_characters(str(x)) if pd.notnull(x) else x)
     return df
 
@@ -43,14 +50,23 @@ def clean_dataframe(df):
 def load_data(uploaded_file, pasted_data):
     if uploaded_file is not None:
         if uploaded_file.name.endswith('.xlsx') or uploaded_file.name.endswith('.xls'):
-            df = pd.read_excel(uploaded_file)
+            try:
+                df = pd.read_excel(uploaded_file)
+            except Exception as e:
+                st.error(f"Error reading Excel file: {e}")
+                return None
         elif uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
+            try:
+                df = pd.read_csv(uploaded_file)
+            except Exception as e:
+                st.error(f"Error reading CSV file: {e}")
+                return None
         else:
             st.error("Unsupported file format! Please upload an Excel or CSV file.")
             return None
     elif pasted_data:
         try:
+            # Attempt to detect delimiter automatically
             df = pd.read_csv(StringIO(pasted_data), sep=None, engine='python')
         except Exception as e:
             st.error(f"Error parsing pasted data: {e}")
@@ -64,23 +80,36 @@ def detect_language(text_series):
     try:
         sample_text = ' '.join(text_series.dropna().astype(str).tolist()[:100])  # Use first 100 entries for detection
         lang = detect(sample_text)
-    except Exception:
+    except Exception as e:
+        logging.error(f"Language detection failed: {e}")
         lang = 'unknown'
     return lang
 
-# Function to translate text with retry mechanism
+# Function to translate text with enhanced error handling
 def translate_text(text, src, dest, retries=3, delay=5):
+    """
+    Translates text from source language to destination language.
+    Retries translation upon failure up to a specified number of times.
+    """
     for attempt in range(retries):
         try:
-            translated = translator.translate(text, src=src, dest=dest)
+            # Sanitize text to remove problematic characters
+            sanitized_text = remove_illegal_characters(text)
+            translated = translator.translate(sanitized_text, src=src, dest=dest)
             return translated.text
+        except AttributeError as ae:
+            logging.error(f"AttributeError during translation of '{text}': {ae}")
+            st.error(f"Translation error for '{text}': {ae}")
+            return text  # Return original text if translation fails
         except Exception as e:
             if attempt < retries - 1:
                 st.warning(f"Translation failed for '{text}'. Retrying in {delay} seconds...")
                 time.sleep(delay)
             else:
+                logging.error(f"Translation error for '{text}': {e}")
                 st.error(f"Translation error for '{text}': {e}")
-                return text
+                return text  # Return original text if translation fails
+    return text  # Fallback to original text
 
 # Streamlit App
 def main():
@@ -95,7 +124,7 @@ def main():
 
         # File uploader and text area
         uploaded_file = st.file_uploader("Upload an Excel or CSV file", type=["xlsx", "xls", "csv"])
-        st.write("OR")
+        st.write("**OR**")
         pasted_data = st.text_area("Paste your CSV data here")
 
         df = load_data(uploaded_file, pasted_data)
@@ -147,15 +176,19 @@ def main():
                         to_download = df[[column_to_translate, f"{column_to_translate}_translated"]]
                         to_download = clean_dataframe(to_download)  # Clean the DataFrame
                         to_download_buffer = BytesIO()
-                        to_download.to_excel(to_download_buffer, index=False, engine='openpyxl')
-                        to_download_bytes = to_download_buffer.getvalue()
+                        try:
+                            to_download.to_excel(to_download_buffer, index=False, engine='openpyxl')
+                            to_download_bytes = to_download_buffer.getvalue()
 
-                        st.download_button(
-                            label="Download Translated Data as Excel",
-                            data=to_download_bytes,
-                            file_name='translated_data.xlsx',
-                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-                        )
+                            st.download_button(
+                                label="Download Translated Data as Excel",
+                                data=to_download_bytes,
+                                file_name='translated_data.xlsx',
+                                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                            )
+                        except Exception as e:
+                            logging.error(f"Error exporting to Excel: {e}")
+                            st.error(f"Error exporting to Excel: {e}")
 
     with tabs[1]:
         st.header("Word Analysis Module")
@@ -175,7 +208,7 @@ def main():
                 # Get stopwords
                 if lang in stopwords.fileids():
                     lang_stopwords = set(stopwords.words(lang))
-                    st.write(f"**Number of Stopwords for {lang}:** {len(lang_stopwords)}")
+                    st.write(f"**Number of Stopwords for '{lang}':** {len(lang_stopwords)}")
                 else:
                     lang_stopwords = set()
                     if lang != 'unknown':
@@ -198,30 +231,34 @@ def main():
                 st.write(f"**Final Text Word Count:** {len(final_text.split())}")
 
                 if final_text.strip():  # Check if final_text is not empty or just whitespace
-                    # Word Cloud
-                    st.subheader("Word Cloud")
-                    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(final_text)
-                    fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
-                    ax_wc.imshow(wordcloud, interpolation='bilinear')
-                    ax_wc.axis('off')
-                    st.pyplot(fig_wc)
+                    try:
+                        # Word Cloud
+                        st.subheader("Word Cloud")
+                        wordcloud = WordCloud(width=800, height=400, background_color='white').generate(final_text)
+                        fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
+                        ax_wc.imshow(wordcloud, interpolation='bilinear')
+                        ax_wc.axis('off')
+                        st.pyplot(fig_wc)
 
-                    # Word Frequency
-                    st.subheader("Word Frequency")
-                    word_counts = Counter(final_text.split())
-                    most_common = word_counts.most_common(20)
-                    freq_df = pd.DataFrame(most_common, columns=['Word', 'Frequency'])
-                    st.dataframe(freq_df)
+                        # Word Frequency
+                        st.subheader("Word Frequency")
+                        word_counts = Counter(final_text.split())
+                        most_common = word_counts.most_common(20)
+                        freq_df = pd.DataFrame(most_common, columns=['Word', 'Frequency'])
+                        st.dataframe(freq_df)
 
-                    # Bar Chart for Word Frequency
-                    st.subheader("Word Frequency Chart")
-                    fig_freq, ax_freq = plt.subplots(figsize=(10, 5))
-                    ax_freq.bar([x[0] for x in most_common], [x[1] for x in most_common], color='skyblue')
-                    ax_freq.set_xlabel('Words')
-                    ax_freq.set_ylabel('Frequency')
-                    ax_freq.set_title('Top 20 Words')
-                    plt.xticks(rotation=45)
-                    st.pyplot(fig_freq)
+                        # Bar Chart for Word Frequency
+                        st.subheader("Word Frequency Chart")
+                        fig_freq, ax_freq = plt.subplots(figsize=(10, 5))
+                        ax_freq.bar([x[0] for x in most_common], [x[1] for x in most_common], color='skyblue')
+                        ax_freq.set_xlabel('Words')
+                        ax_freq.set_ylabel('Frequency')
+                        ax_freq.set_title('Top 20 Words')
+                        plt.xticks(rotation=45)
+                        st.pyplot(fig_freq)
+                    except ValueError as ve:
+                        logging.error(f"WordCloud generation failed: {ve}")
+                        st.error(f"WordCloud generation failed: {ve}")
                 else:
                     st.warning("No words available for analysis. Please ensure the selected column contains valid text and that stopwords removal did not eliminate all words.")
         else:
