@@ -6,3 +6,4 @@ googletrans
 wordcloud
 matplotlib
 nltk
+spacy
