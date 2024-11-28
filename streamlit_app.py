@@ -7,6 +7,7 @@ from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 from nltk.corpus import stopwords
 import nltk
+import re
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -16,6 +17,24 @@ translator = Translator()
 
 # Download NLTK stopwords if not already downloaded
 nltk.download('stopwords', quiet=True)
+
+# Function to remove illegal characters
+def remove_illegal_characters(text):
+    """
+    Removes illegal characters from a string that are not allowed in Excel cells.
+    """
+    # Remove characters with code points < 32 except for tab (\t), newline (\n), carriage return (\r)
+    return re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]', '', text)
+
+# Function to clean DataFrame
+def clean_dataframe(df):
+    """
+    Cleans the DataFrame by removing illegal characters from all string-type columns.
+    """
+    string_cols = df.select_dtypes(include=['object']).columns
+    for col in string_cols:
+        df[col] = df[col].apply(lambda x: remove_illegal_characters(str(x)) if pd.notnull(x) else x)
+    return df
 
 # Function to load data
 @st.cache_data
@@ -93,7 +112,6 @@ def main():
                     st.error("Could not detect language. Please ensure the text is sufficient for detection.")
                 else:
                     # Select target language
-                    # For simplicity, let's provide a few common languages
                     LANGUAGES = {
                         'English': 'en',
                         'Spanish': 'es',
@@ -104,7 +122,8 @@ def main():
                         'Arabic': 'ar',
                         'Hindi': 'hi',
                         'Portuguese': 'pt',
-                        'Russian': 'ru'
+                        'Russian': 'ru',
+                        'Italian': 'it'  # Added Italian
                     }
 
                     target_lang_name = st.selectbox("Select target language", list(LANGUAGES.keys()), index=0)
@@ -119,6 +138,7 @@ def main():
 
                         # Option to download the translated data
                         to_download = df[[column_to_translate, f"{column_to_translate}_translated"]]
+                        to_download = clean_dataframe(to_download)  # Clean the DataFrame
                         to_download_buffer = BytesIO()
                         to_download.to_excel(to_download_buffer, index=False)
                         to_download_bytes = to_download_buffer.getvalue()
