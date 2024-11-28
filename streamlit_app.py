@@ -9,6 +9,7 @@ from nltk.corpus import stopwords
 import nltk
 import re
 from collections import Counter
+import time  # Required for retry mechanism
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -46,7 +47,7 @@ def load_data(uploaded_file, pasted_data):
         elif uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
         else:
-            st.error("Unsupported file format!")
+            st.error("Unsupported file format! Please upload an Excel or CSV file.")
             return None
     elif pasted_data:
         try:
@@ -67,7 +68,7 @@ def detect_language(text_series):
         lang = 'unknown'
     return lang
 
-# Function to translate text
+# Function to translate text with retry mechanism
 def translate_text(text, src, dest, retries=3, delay=5):
     for attempt in range(retries):
         try:
@@ -169,12 +170,18 @@ def main():
 
                 # Detect language for stopwords
                 lang = detect_language(df[analysis_column])
+                st.write(f"**Detected Language for Analysis:** {lang}")
 
                 # Get stopwords
                 if lang in stopwords.fileids():
                     lang_stopwords = set(stopwords.words(lang))
+                    st.write(f"**Number of Stopwords for {lang}:** {len(lang_stopwords)}")
                 else:
                     lang_stopwords = set()
+                    if lang != 'unknown':
+                        st.warning(f"No stopwords found for the detected language '{lang}'.")
+                    else:
+                        st.warning("Language detection failed. Stopwords removal is skipped.")
 
                 remove_sw = st.checkbox("Remove Stopwords", value=True)
 
@@ -182,8 +189,13 @@ def main():
                     words = combined_text.split()
                     filtered_words = [word for word in words if word.lower() not in lang_stopwords]
                     final_text = ' '.join(filtered_words)
+                    st.write(f"**Words after Stopwords Removal:** {len(filtered_words)}")
                 else:
                     final_text = combined_text
+                    st.write(f"**Total Words for Analysis:** {len(combined_text.split())}")
+
+                # Debugging: Display word count
+                st.write(f"**Final Text Word Count:** {len(final_text.split())}")
 
                 if final_text.strip():  # Check if final_text is not empty or just whitespace
                     # Word Cloud
