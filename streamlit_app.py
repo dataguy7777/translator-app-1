@@ -11,8 +11,10 @@ import re
 from collections import Counter
 import time  # Required for retry mechanism
 import logging
+import spacy
+from spacy.util import get_package_path
 
-# Configure logging to capture translation errors
+# Configure logging to capture translation and NER errors
 logging.basicConfig(filename='app.log', level=logging.ERROR,
                     format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -111,39 +113,66 @@ def translate_text(text, src, dest, retries=3, delay=5):
                 return text  # Return original text if translation fails
     return text  # Fallback to original text
 
+# Function to load spaCy model based on language code
+@st.cache_resource
+def load_spacy_model(lang_code):
+    """
+    Loads the appropriate spaCy model based on the detected language code.
+    """
+    model_mapping = {
+        'en': 'en_core_web_sm',
+        'es': 'es_core_news_sm',
+        'fr': 'fr_core_news_sm',
+        'de': 'de_core_news_sm',
+        'it': 'it_core_news_sm',
+        # Add more mappings as needed
+    }
+    model_name = model_mapping.get(lang_code)
+    if model_name:
+        try:
+            return spacy.load(model_name)
+        except OSError:
+            st.error(f"spaCy model '{model_name}' not found. Please install it using 'python -m spacy download {model_name}'.")
+            logging.error(f"spaCy model '{model_name}' not found.")
+            return None
+    else:
+        st.error(f"No spaCy model available for language code '{lang_code}'.")
+        logging.error(f"No spaCy model available for language code '{lang_code}'.")
+        return None
+
 # Streamlit App
 def main():
     st.set_page_config(page_title="Excel Translator & Word Analyzer", layout="wide")
     st.title("📊 Excel Translator & Word Analyzer")
-
+    
     # Tabs
-    tabs = st.tabs(["🔄 Translate", "📝 Word Analysis"])
-
+    tabs = st.tabs(["🔄 Translate", "📝 Word Analysis", "🔍 Entity Recognition"])
+    
     with tabs[0]:
         st.header("Translation Module")
-
+        
         # File uploader and text area
         uploaded_file = st.file_uploader("Upload an Excel or CSV file", type=["xlsx", "xls", "csv"])
         st.write("**OR**")
         pasted_data = st.text_area("Paste your CSV data here")
-
+        
         df = load_data(uploaded_file, pasted_data)
-
+        
         if df is not None:
             st.success("Data loaded successfully!")
             st.dataframe(df.head())
-
+            
             # Select column to translate
             columns = df.columns.tolist()
             column_to_translate = st.selectbox("Select the column to translate", columns)
-
+            
             if column_to_translate:
                 texts = df[column_to_translate].dropna().astype(str)
-
+                
                 # Detect language
                 lang = detect_language(texts)
                 st.write(f"**Detected Language:** {lang}")
-
+                
                 if lang == 'unknown':
                     st.error("Could not detect language. Please ensure the text is sufficient for detection.")
                 else:
@@ -161,17 +190,17 @@ def main():
                         'Russian': 'ru',
                         'Italian': 'it'  # Added Italian
                     }
-
+                    
                     target_lang_name = st.selectbox("Select target language", list(LANGUAGES.keys()), index=0)
                     target_lang = LANGUAGES[target_lang_name]
-
+                    
                     if st.button("Translate"):
                         with st.spinner("Translating..."):
                             translated_texts = texts.apply(lambda x: translate_text(x, src=lang, dest=target_lang))
                             df[f"{column_to_translate}_translated"] = translated_texts
                         st.success("Translation completed!")
                         st.dataframe(df[[column_to_translate, f"{column_to_translate}_translated"]].head())
-
+                        
                         # Option to download the translated data
                         to_download = df[[column_to_translate, f"{column_to_translate}_translated"]]
                         to_download = clean_dataframe(to_download)  # Clean the DataFrame
@@ -179,7 +208,7 @@ def main():
                         try:
                             to_download.to_excel(to_download_buffer, index=False, engine='openpyxl')
                             to_download_bytes = to_download_buffer.getvalue()
-
+                            
                             st.download_button(
                                 label="Download Translated Data as Excel",
                                 data=to_download_bytes,
@@ -192,19 +221,19 @@ def main():
 
     with tabs[1]:
         st.header("Word Analysis Module")
-
+        
         if df is not None:
             # Select column for analysis
             analysis_column = st.selectbox("Select the column for word analysis", df.columns.tolist(), key="analysis_column")
-
+            
             if analysis_column:
                 texts = df[analysis_column].dropna().astype(str).tolist()
                 combined_text = ' '.join(texts)
-
+                
                 # Detect language for stopwords
                 lang = detect_language(df[analysis_column])
                 st.write(f"**Detected Language for Analysis:** {lang}")
-
+                
                 # Get stopwords
                 if lang in stopwords.fileids():
                     lang_stopwords = set(stopwords.words(lang))
@@ -215,9 +244,9 @@ def main():
                         st.warning(f"No stopwords found for the detected language '{lang}'.")
                     else:
                         st.warning("Language detection failed. Stopwords removal is skipped.")
-
+                
                 remove_sw = st.checkbox("Remove Stopwords", value=True)
-
+                
                 if remove_sw and lang_stopwords:
                     words = combined_text.split()
                     filtered_words = [word for word in words if word.lower() not in lang_stopwords]
@@ -226,10 +255,10 @@ def main():
                 else:
                     final_text = combined_text
                     st.write(f"**Total Words for Analysis:** {len(combined_text.split())}")
-
+                
                 # Debugging: Display word count
                 st.write(f"**Final Text Word Count:** {len(final_text.split())}")
-
+                
                 if final_text.strip():  # Check if final_text is not empty or just whitespace
                     try:
                         # Word Cloud
@@ -239,14 +268,14 @@ def main():
                         ax_wc.imshow(wordcloud, interpolation='bilinear')
                         ax_wc.axis('off')
                         st.pyplot(fig_wc)
-
+                        
                         # Word Frequency
                         st.subheader("Word Frequency")
                         word_counts = Counter(final_text.split())
                         most_common = word_counts.most_common(20)
                         freq_df = pd.DataFrame(most_common, columns=['Word', 'Frequency'])
                         st.dataframe(freq_df)
-
+                        
                         # Bar Chart for Word Frequency
                         st.subheader("Word Frequency Chart")
                         fig_freq, ax_freq = plt.subplots(figsize=(10, 5))
@@ -261,6 +290,75 @@ def main():
                         st.error(f"WordCloud generation failed: {ve}")
                 else:
                     st.warning("No words available for analysis. Please ensure the selected column contains valid text and that stopwords removal did not eliminate all words.")
+        else:
+            st.warning("Please load data in the Translate tab first.")
+    
+    with tabs[2]:
+        st.header("🔍 Entity Recognition Module")
+        
+        if df is not None:
+            # Select column for entity recognition
+            entity_column = st.selectbox("Select the column for Entity Recognition", df.columns.tolist(), key="entity_column")
+            
+            if entity_column:
+                texts = df[entity_column].dropna().astype(str).tolist()
+                combined_text = ' '.join(texts)
+                
+                # Detect language for NER
+                lang = detect_language(df[entity_column])
+                st.write(f"**Detected Language for Entity Recognition:** {lang}")
+                
+                if lang == 'unknown':
+                    st.error("Could not detect language. Please ensure the text is sufficient for detection.")
+                else:
+                    # Load spaCy model
+                    nlp = load_spacy_model(lang)
+                    
+                    if nlp:
+                        with st.spinner("Performing Entity Recognition..."):
+                            entities = []
+                            for doc in nlp.pipe(texts, disable=["tagger", "parser"]):
+                                entities.extend([ent.text for ent in doc.ents])
+                        
+                        if entities:
+                            st.success("Entity Recognition completed!")
+                            
+                            # Remove stopwords from entities
+                            if lang in stopwords.fileids():
+                                lang_stopwords = set(stopwords.words(lang))
+                                entities = [word for word in entities if word.lower() not in lang_stopwords]
+                                st.write(f"**Entities after Stopwords Removal:** {len(entities)}")
+                            else:
+                                st.warning(f"No stopwords found for the detected language '{lang}'.")
+                            
+                            # Generate Word Cloud
+                            st.subheader("Entity Word Cloud")
+                            final_entities_text = ' '.join(entities)
+                            if final_entities_text.strip():
+                                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(final_entities_text)
+                                fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
+                                ax_wc.imshow(wordcloud, interpolation='bilinear')
+                                ax_wc.axis('off')
+                                st.pyplot(fig_wc)
+                                
+                                # Generate Histogram of Word Frequency
+                                st.subheader("Entity Frequency Histogram")
+                                entity_counts = Counter(entities)
+                                most_common = entity_counts.most_common(20)
+                                freq_df = pd.DataFrame(most_common, columns=['Entity', 'Frequency'])
+                                st.dataframe(freq_df)
+                                
+                                fig_hist, ax_hist = plt.subplots(figsize=(10, 5))
+                                ax_hist.bar([x[0] for x in most_common], [x[1] for x in most_common], color='coral')
+                                ax_hist.set_xlabel('Entities')
+                                ax_hist.set_ylabel('Frequency')
+                                ax_hist.set_title('Top 20 Entities')
+                                plt.xticks(rotation=45)
+                                st.pyplot(fig_hist)
+                            else:
+                                st.warning("No entities available after stopwords removal to generate visualizations.")
+                        else:
+                            st.warning("No entities found in the selected column.")
         else:
             st.warning("Please load data in the Translate tab first.")
 
