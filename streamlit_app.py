@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from nltk.corpus import stopwords
 import nltk
 import re
+from collections import Counter
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -33,7 +34,7 @@ def clean_dataframe(df):
     """
     string_cols = df.select_dtypes(include=['object']).columns
     for col in string_cols:
-        df[col] = df[col].apply(lambda x: remove_illegal_characters(str(x)) if pd.notnull(x) else x)
+        df.loc[:, col] = df[col].apply(lambda x: remove_illegal_characters(str(x)) if pd.notnull(x) else x)
     return df
 
 # Function to load data
@@ -67,13 +68,18 @@ def detect_language(text_series):
     return lang
 
 # Function to translate text
-def translate_text(text, src, dest):
-    try:
-        translated = translator.translate(text, src=src, dest=dest)
-        return translated.text
-    except Exception as e:
-        st.error(f"Translation error: {e}")
-        return text
+def translate_text(text, src, dest, retries=3, delay=5):
+    for attempt in range(retries):
+        try:
+            translated = translator.translate(text, src=src, dest=dest)
+            return translated.text
+        except Exception as e:
+            if attempt < retries - 1:
+                st.warning(f"Translation failed for '{text}'. Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                st.error(f"Translation error for '{text}': {e}")
+                return text
 
 # Streamlit App
 def main():
@@ -140,7 +146,7 @@ def main():
                         to_download = df[[column_to_translate, f"{column_to_translate}_translated"]]
                         to_download = clean_dataframe(to_download)  # Clean the DataFrame
                         to_download_buffer = BytesIO()
-                        to_download.to_excel(to_download_buffer, index=False)
+                        to_download.to_excel(to_download_buffer, index=False, engine='openpyxl')
                         to_download_bytes = to_download_buffer.getvalue()
 
                         st.download_button(
@@ -179,31 +185,33 @@ def main():
                 else:
                     final_text = combined_text
 
-                # Word Cloud
-                st.subheader("Word Cloud")
-                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(final_text)
-                fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
-                ax_wc.imshow(wordcloud, interpolation='bilinear')
-                ax_wc.axis('off')
-                st.pyplot(fig_wc)
+                if final_text.strip():  # Check if final_text is not empty or just whitespace
+                    # Word Cloud
+                    st.subheader("Word Cloud")
+                    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(final_text)
+                    fig_wc, ax_wc = plt.subplots(figsize=(10, 5))
+                    ax_wc.imshow(wordcloud, interpolation='bilinear')
+                    ax_wc.axis('off')
+                    st.pyplot(fig_wc)
 
-                # Word Frequency
-                st.subheader("Word Frequency")
-                from collections import Counter
-                word_counts = Counter(final_text.split())
-                most_common = word_counts.most_common(20)
-                freq_df = pd.DataFrame(most_common, columns=['Word', 'Frequency'])
-                st.dataframe(freq_df)
+                    # Word Frequency
+                    st.subheader("Word Frequency")
+                    word_counts = Counter(final_text.split())
+                    most_common = word_counts.most_common(20)
+                    freq_df = pd.DataFrame(most_common, columns=['Word', 'Frequency'])
+                    st.dataframe(freq_df)
 
-                # Bar Chart for Word Frequency
-                st.subheader("Word Frequency Chart")
-                fig_freq, ax_freq = plt.subplots(figsize=(10, 5))
-                ax_freq.bar([x[0] for x in most_common], [x[1] for x in most_common], color='skyblue')
-                ax_freq.set_xlabel('Words')
-                ax_freq.set_ylabel('Frequency')
-                ax_freq.set_title('Top 20 Words')
-                plt.xticks(rotation=45)
-                st.pyplot(fig_freq)
+                    # Bar Chart for Word Frequency
+                    st.subheader("Word Frequency Chart")
+                    fig_freq, ax_freq = plt.subplots(figsize=(10, 5))
+                    ax_freq.bar([x[0] for x in most_common], [x[1] for x in most_common], color='skyblue')
+                    ax_freq.set_xlabel('Words')
+                    ax_freq.set_ylabel('Frequency')
+                    ax_freq.set_title('Top 20 Words')
+                    plt.xticks(rotation=45)
+                    st.pyplot(fig_freq)
+                else:
+                    st.warning("No words available for analysis. Please ensure the selected column contains valid text and that stopwords removal did not eliminate all words.")
         else:
             st.warning("Please load data in the Translate tab first.")
 
